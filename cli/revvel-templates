@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+"""
+Revvel Template Library CLI
+Command-line interface for searching and accessing templates.
+"""
+import sqlite3
+import argparse
+import json
+import sys
+from pathlib import Path
+
+DB_PATH = "/home/ubuntu/revvel-template-library/catalog/templates.db"
+
+def get_db():
+    """Get database connection."""
+    return sqlite3.connect(DB_PATH)
+
+def list_templates(args):
+    """List templates with optional filters."""
+    conn = get_db()
+    c = conn.cursor()
+    
+    query = "SELECT id, name, category, subcategory, format, is_free FROM templates WHERE 1=1"
+    params = []
+    
+    if args.category:
+        query += " AND category = ?"
+        params.append(args.category)
+    if args.subcategory:
+        query += " AND subcategory = ?"
+        params.append(args.subcategory)
+    if args.free:
+        query += " AND is_free = 1"
+    if args.format:
+        query += " AND format LIKE ?"
+        params.append(f"%{args.format}%")
+    
+    query += f" LIMIT {args.limit}"
+    
+    c.execute(query, params)
+    rows = c.fetchall()
+    conn.close()
+    
+    if args.json:
+        columns = ["id", "name", "category", "subcategory", "format", "is_free"]
+        results = [dict(zip(columns, row)) for row in rows]
+        print(json.dumps(results, indent=2))
+    else:
+        print(f"\n{'ID':<10} {'Name':<50} {'Category':<25} {'Format':<15} {'Free':<5}")
+        print("-" * 110)
+        for row in rows:
+            free_status = "✓" if row[5] else "✗"
+            print(f"{row[0]:<10} {row[1][:48]:<50} {row[2][:23]:<25} {row[4]:<15} {free_status:<5}")
+        print(f"\nTotal: {len(rows)} templates")
+
+def search_templates(args):
+    """Search templates by keyword."""
+    conn = get_db()
+    c = conn.cursor()
+    
+    c.execute("""
+        SELECT id, name, category, description 
+        FROM templates 
+        WHERE name LIKE ? OR description LIKE ? OR tags LIKE ?
+        LIMIT ?
+    """, (f"%{args.query}%", f"%{args.query}%", f"%{args.query}%", args.limit))
+    
+    rows = c.fetchall()
+    conn.close()
+    
+    if args.json:
+        columns = ["id", "name", "category", "description"]
+        results = [dict(zip(columns, row)) for row in rows]
+        print(json.dumps(results, indent=2))
+    else:
+        print(f"\nSearch results for: '{args.query}'")
+        print("-" * 80)
+        for row in rows:
+            print(f"\n[{row[0]}] {row[1]}")
+            print(f"  Category: {row[2]}")
+            print(f"  {row[3][:150]}...")
+        print(f"\nFound {len(rows)} results")
+
+def show_template(args):
+    """Show detailed information about a template."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT * FROM templates WHERE id = ?", (args.id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        print(f"Template with ID '{args.id}' not found.")
+        sys.exit(1)
+    
+    columns = ["id", "name", "category", "subcategory", "source", "source_url", 
+               "download_url", "format", "description", "is_free", "tags", 
+               "file_path", "has_file", "created_at", "popularity", "author", "seo_keywords"]
+    
+    template = dict(zip(columns, row))
+    
+    if args.json:
+        print(json.dumps(template, indent=2))
+    else:
+        print(f"\n{'='*80}")
+        print(f"Template: {template['name']}")
+        print(f"{'='*80}")
+        print(f"ID: {template['id']}")
+        print(f"Category: {template['category']} > {template['subcategory']}")
+        print(f"Format: {template['format']}")
+        print(f"Source: {template['source']}")
+        print(f"Free: {'Yes' if template['is_free'] else 'No'}")
+        print(f"\nDescription:")
+        print(f"  {template['description']}")
+        if template['source_url']:
+            print(f"\nSource URL: {template['source_url']}")
+        if template['download_url']:
+            print(f"Download URL: {template['download_url']}")
+        if template['tags']:
+            print(f"\nTags: {template['tags']}")
+        print(f"\nAuthor: {template['author']}")
+        print(f"Created: {template['created_at']}")
+
+def list_categories(args):
+    """List all categories."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT id, name, description FROM categories WHERE parent_id IS NULL")
+    rows = c.fetchall()
+    conn.close()
+    
+    if args.json:
+        columns = ["id", "name", "description"]
+        results = [dict(zip(columns, row)) for row in rows]
+        print(json.dumps(results, indent=2))
+    else:
+        print("\nAvailable Categories:")
+        print("-" * 80)
+        for row in rows:
+            print(f"\n{row[1]}")
+            print(f"  {row[2]}")
+
+def stats(args):
+    """Show library statistics."""
+    conn = get_db()
+    c = conn.cursor()
+    
+    c.execute("SELECT COUNT(*) FROM templates")
+    total = c.fetchone()[0]
+    
+    c.execute("SELECT category, COUNT(*) FROM templates GROUP BY category ORDER BY COUNT(*) DESC")
+    by_category = c.fetchall()
+    
+    c.execute("SELECT COUNT(*) FROM templates WHERE is_free = 1")
+    free = c.fetchone()[0]
+    
+    conn.close()
+    
+    if args.json:
+        result = {
+            "total_templates": total,
+            "free_templates": free,
+            "by_category": [{"category": row[0], "count": row[1]} for row in by_category]
+        }
+        print(json.dumps(result, indent=2))
+    else:
+        print("\n" + "="*80)
+        print("Revvel Template Library Statistics")
+        print("="*80)
+        print(f"\nTotal Templates: {total}")
+        print(f"Free Templates: {free} ({free*100//total}%)")
+        print("\nBy Category:")
+        for row in by_category:
+            print(f"  {row[0]:<30} {row[1]:>5} templates")
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Revvel Template Library CLI - Access 500+ templates from the command line",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    
+    # List command
+    list_parser = subparsers.add_parser("list", help="List templates")
+    list_parser.add_argument("--category", help="Filter by category")
+    list_parser.add_argument("--subcategory", help="Filter by subcategory")
+    list_parser.add_argument("--format", help="Filter by format (PDF, DOCX, MD, etc.)")
+    list_parser.add_argument("--free", action="store_true", help="Show only free templates")
+    list_parser.add_argument("--limit", type=int, default=50, help="Maximum results (default: 50)")
+    list_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    
+    # Search command
+    search_parser = subparsers.add_parser("search", help="Search templates")
+    search_parser.add_argument("query", help="Search query")
+    search_parser.add_argument("--limit", type=int, default=20, help="Maximum results (default: 20)")
+    search_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    
+    # Show command
+    show_parser = subparsers.add_parser("show", help="Show template details")
+    show_parser.add_argument("id", help="Template ID")
+    show_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    
+    # Categories command
+    cat_parser = subparsers.add_parser("categories", help="List categories")
+    cat_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    
+    # Stats command
+    stats_parser = subparsers.add_parser("stats", help="Show library statistics")
+    stats_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    
+    args = parser.parse_args()
+    
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+    
+    if args.command == "list":
+        list_templates(args)
+    elif args.command == "search":
+        search_templates(args)
+    elif args.command == "show":
+        show_template(args)
+    elif args.command == "categories":
+        list_categories(args)
+    elif args.command == "stats":
+        stats(args)
+
+if __name__ == "__main__":
+    main()
